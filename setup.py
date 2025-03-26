@@ -67,6 +67,7 @@ setup(
     version=get_version(),
     description='ovos wikipedia plugin',
     long_description=long_description,
+    long_description_content_type="text/markdown",
     url="https://github.com/OpenVoiceOS/ovos-solver-wikipedia-plugin",
     author='JarbasAi',
     author_email='jarbasai@mailfence.com',
