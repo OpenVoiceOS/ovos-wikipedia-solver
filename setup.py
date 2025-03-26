@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+import os
+from os import walk, path
+
+from setuptools import setup
+
+URL="https://github.com/OpenVoiceOS/ovos-wikipedia-solver"
+PKG_NAME = URL.split("/")[-1]
+IMPORT_NAME = PKG_NAME.replace("-", "_")
+
+PERSONA_ENTRY_POINT = f'Wikipedia={IMPORT_NAME}:WIKIPEDIA_PERSONA'
+SOLVER_ENTRY_POINT = f'ovos-solver-plugin-wikipedia={IMPORT_NAME}:WikipediaSolver'
+
+BASE_DIR = path.abspath(path.dirname(__file__))
+
+
+def get_requirements(requirements_filename: str):
+    requirements_file = path.join(BASE_DIR, requirements_filename)
+    with open(requirements_file, 'r', encoding='utf-8') as r:
+        requirements = r.readlines()
+    requirements = [r.strip() for r in requirements if r.strip()
+                    and not r.strip().startswith("#")]
+    if 'MYCROFT_LOOSE_REQUIREMENTS' in os.environ:
+        print('USING LOOSE REQUIREMENTS!')
+        requirements = [r.replace('==', '>=').replace('~=', '>=') for r in requirements]
+    return requirements
+
+
+with open(path.join(BASE_DIR, "README.md"), "r") as f:
+    long_description = f.read()
+
+
+def get_version():
+    """ Find the version of this skill"""
+    version_file = path.join(path.dirname(__file__), IMPORT_NAME, 'version.py')
+    major, minor, build, alpha = (None, None, None, None)
+    with open(version_file) as f:
+        for line in f:
+            if 'VERSION_MAJOR' in line:
+                major = line.split('=')[1].strip()
+            elif 'VERSION_MINOR' in line:
+                minor = line.split('=')[1].strip()
+            elif 'VERSION_BUILD' in line:
+                build = line.split('=')[1].strip()
+            elif 'VERSION_ALPHA' in line:
+                alpha = line.split('=')[1].strip()
+
+            if ((major and minor and build and alpha) or
+                    '# END_VERSION_BLOCK' in line):
+                break
+    version = f"{major}.{minor}.{build}"
+    if int(alpha):
+        version += f"a{alpha}"
+    return version
+
+
+def package_files(directory):
+    paths = []
+    for (path, directories, filenames) in os.walk(directory):
+        for filename in filenames:
+            paths.append(os.path.join('..', path, filename))
+    return paths
+
+
+setup(
+    name=PKG_NAME,
+    version=get_version(),
+    description='ovos wikipedia plugin',
+    long_description=long_description,
+    url="https://github.com/OpenVoiceOS/ovos-solver-wikipedia-plugin",
+    author='JarbasAi',
+    author_email='jarbasai@mailfence.com',
+    license='Apache-2.0',
+    packages=[IMPORT_NAME],
+    package_data={'': package_files('ovos-plugin-manager')},
+    include_package_data=True,
+    install_requires=get_requirements("requirements.txt"),
+    keywords='ovos skill plugin',
+    entry_points={
+        'neon.plugin.solver': SOLVER_ENTRY_POINT,
+        "opm.plugin.persona": PERSONA_ENTRY_POINT}
+)
