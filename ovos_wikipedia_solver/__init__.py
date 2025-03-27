@@ -15,14 +15,15 @@ from typing import Optional, Tuple, Dict, Any
 
 import requests
 from crf_query_xtract import SearchtermExtractorCRF
-from ovos_bm25_solver import BM25MultipleChoiceSolver
-from ovos_plugin_manager.templates.language import LanguageTranslator, LanguageDetector
-from ovos_plugin_manager.templates.solvers import QuestionSolver
 from ovos_utils import flatten_list
 from ovos_utils.log import LOG
 from ovos_utils.parse import fuzzy_match, MatchStrategy
 from ovos_utils.text_utils import rm_parentheses
 from quebra_frases import sentence_tokenize
+
+from ovos_bm25_solver import BM25MultipleChoiceSolver
+from ovos_plugin_manager.templates.language import LanguageTranslator, LanguageDetector
+from ovos_plugin_manager.templates.solvers import QuestionSolver
 
 
 class WikipediaSolver(QuestionSolver):
@@ -55,7 +56,11 @@ class WikipediaSolver(QuestionSolver):
             LOG.error(f"Keyword extractor does not support lang: '{lang}'")
             return None
         if lang not in self.kword_extractors:
-            self.kword_extractors[lang] = SearchtermExtractorCRF.from_pretrained(lang)
+            try:
+                self.kword_extractors[lang] = SearchtermExtractorCRF.from_pretrained(lang)
+            except Exception as e:
+                LOG.error(f"Failed to load keyword extractor for '{lang}'  ({e})")
+                return utterance
 
         kw = self.kword_extractors[lang].extract_keyword(utterance)
         if kw:
@@ -99,8 +104,7 @@ class WikipediaSolver(QuestionSolver):
             return None, None, None
 
     @lru_cache(maxsize=128)
-    def summarize(self, query: str, summary: str,
-                  lang: Optional[str] = None) -> str:
+    def summarize(self, query: str, summary: str, lang: Optional[str] = None) -> str:
         """
         Summarize a text using a query for context.
 
@@ -113,10 +117,13 @@ class WikipediaSolver(QuestionSolver):
         """
         try:
             top_k = 3
+            lang = lang or self.default_lang  # ensure its not None to skip auto language detection
             sentences = sentence_tokenize(summary)
             ranked = BM25MultipleChoiceSolver(internal_lang=lang,
-                                              detector=self.detector,
-                                              translator=self.translator).rerank(query, sentences, lang)[:top_k]
+                                              detector=self._detector,
+                                              translator=self._translator).rerank(query=query,
+                                                                                  options=sentences,
+                                                                                  lang=lang)[:top_k]
             return " ".join([s[1] for s in ranked])
         except Exception as e:
             return summary.split("\n")[0]
