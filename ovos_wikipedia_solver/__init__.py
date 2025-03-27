@@ -30,12 +30,13 @@ class WikipediaSolver(QuestionSolver):
     """
     A solver for answering questions using Wikipedia search and summaries.
     """
-
     def __init__(self, config: Optional[Dict[str, Any]] = None, enable_tx=False,
                  translator: Optional[LanguageTranslator] = None,
                  detector: Optional[LanguageDetector] = None):
         super().__init__(config, enable_tx=enable_tx, priority=40,
                          translator=translator, detector=detector)
+        self.keyword_strategy = self.config.get("strategy", "utterance")
+        # TODO - plugin from config for kw extraction
         self.kword_extractors: Dict[str, SearchtermExtractorCRF] = {}
 
     @lru_cache(maxsize=128)
@@ -55,14 +56,18 @@ class WikipediaSolver(QuestionSolver):
         if lang not in ["ca", "da", "de", "en", "eu", "fr", "gl", "it", "pt"]:
             LOG.error(f"Keyword extractor does not support lang: '{lang}'")
             return None
-        if lang not in self.kword_extractors:
-            try:
-                self.kword_extractors[lang] = SearchtermExtractorCRF.from_pretrained(lang)
-            except Exception as e:
-                LOG.error(f"Failed to load keyword extractor for '{lang}'  ({e})")
-                return utterance
 
-        kw = self.kword_extractors[lang].extract_keyword(utterance)
+        if self.keyword_strategy == "utterance":
+            kw = utterance
+        else:
+            if lang not in self.kword_extractors:
+                try:
+                    self.kword_extractors[lang] = SearchtermExtractorCRF.from_pretrained(lang)
+                except Exception as e:
+                    LOG.error(f"Failed to load keyword extractor for '{lang}'  ({e})")
+                    return utterance
+            kw = self.kword_extractors[lang].extract_keyword(utterance)
+
         if kw:
             LOG.debug(f"Wikipedia search term: {kw}")
         else:
