@@ -1,12 +1,12 @@
 # Changelog
 
-## [0.0.3a1](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/tree/0.0.3a1) (2025-03-27)
+## [0.1.0a1](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/tree/0.1.0a1) (2025-03-27)
 
-[Full Changelog](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/compare/0.0.2...0.0.3a1)
+[Full Changelog](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/compare/0.0.3...0.1.0a1)
 
 **Merged pull requests:**
 
-- fix:error handling and avoid translator plugin init [\#1](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/pull/1) ([JarbasAl](https://github.com/JarbasAl))
+- feat: configurable keyword extraction strategy [\#3](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/pull/3) ([JarbasAl](https://github.com/JarbasAl))
 
 
 
