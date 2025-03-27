@@ -37,7 +37,7 @@ class WikipediaSolver(QuestionSolver):
                          translator=translator, detector=detector)
         self.keyword_strategy = self.config.get("strategy", "utterance")
         # TODO - plugin from config for kw extraction
-        self.crf_extractors: Dict[str, SearchtermExtractorCRF] = {}
+        self.kword_extractors: Dict[str, SearchtermExtractorCRF] = {}
 
     @lru_cache(maxsize=128)
     def extract_keyword(self, utterance: str, lang: str) -> Optional[str]:
@@ -60,13 +60,13 @@ class WikipediaSolver(QuestionSolver):
         if self.keyword_strategy == "utterance":
             kw = utterance
         else:
-            if lang not in self.crf_extractors:
+            if lang not in self.kword_extractors:
                 try:
-                    self.crf_extractors[lang] = SearchtermExtractorCRF.from_pretrained(lang)
+                    self.kword_extractors[lang] = SearchtermExtractorCRF.from_pretrained(lang)
                 except Exception as e:
                     LOG.error(f"Failed to load keyword extractor for '{lang}'  ({e})")
                     return utterance
-            kw = self.crf_extractors[lang].extract_keyword(utterance)
+            kw = self.kword_extractors[lang].extract_keyword(utterance)
 
         if kw:
             LOG.debug(f"Wikipedia search term: {kw}")
