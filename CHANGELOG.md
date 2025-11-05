@@ -1,12 +1,12 @@
 # Changelog
 
-## [0.1.1a1](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/tree/0.1.1a1) (2025-06-08)
+## [0.1.2a1](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/tree/0.1.2a1) (2025-11-05)
 
-[Full Changelog](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/compare/0.1.0...0.1.1a1)
+[Full Changelog](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/compare/0.1.1...0.1.2a1)
 
 **Merged pull requests:**
 
-- fix: compatibility with ovos-plugin-manager 1.X.X [\#5](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/pull/5) ([JarbasAl](https://github.com/JarbasAl))
+- Update ovos-plugin-manager version range [\#7](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/pull/7) ([JarbasAl](https://github.com/JarbasAl))
 
 
 

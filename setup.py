@@ -63,7 +63,7 @@ def package_files(directory):
 
 
 setup(
-    name=PKG_NAME,
+    name=PKG_NAME.replace("-", "_"),
     version=get_version(),
     description='ovos wikipedia plugin',
     long_description=long_description,
