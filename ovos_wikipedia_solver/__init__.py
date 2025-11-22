@@ -14,18 +14,19 @@ from functools import lru_cache
 from typing import Optional, Tuple, Dict, Any
 
 import requests
-from crf_query_xtract import SearchtermExtractorCRF
+from ovos_bm25_solver import BM25MultipleChoiceSolver
+from ovos_plugin_manager.keywords import load_keyword_extract_plugin
+from ovos_plugin_manager.solvers import load_tldr_solver_plugin
+from ovos_plugin_manager.templates.keywords import KeywordExtractor
+from ovos_plugin_manager.templates.language import LanguageTranslator, LanguageDetector
+from ovos_plugin_manager.templates.solvers import QuestionSolver, TldrSolver
 from ovos_utils import flatten_list
 from ovos_utils.log import LOG
 from ovos_utils.parse import fuzzy_match, MatchStrategy
 from ovos_utils.text_utils import rm_parentheses
 from quebra_frases import sentence_tokenize
 
-from ovos_bm25_solver import BM25MultipleChoiceSolver
-from ovos_plugin_manager.templates.language import LanguageTranslator, LanguageDetector
-from ovos_plugin_manager.templates.solvers import QuestionSolver
 from ovos_wikipedia_solver.version import VERSION_BUILD, VERSION_MAJOR, VERSION_MINOR
-
 
 
 class WikipediaSolver(QuestionSolver):
@@ -34,49 +35,45 @@ class WikipediaSolver(QuestionSolver):
     """
     USER_AGENT = f"ovos-wikipedia-solver/{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_BUILD} (https://github.com/OpenVoiceOS/ovos-wikipedia-solver)"
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, enable_tx=False,
+    def __init__(self, config: Optional[Dict[str, Any]] = None,
+                 enable_tx=False,
                  translator: Optional[LanguageTranslator] = None,
                  detector: Optional[LanguageDetector] = None):
-        super().__init__(config, enable_tx=enable_tx, priority=40,
-                         translator=translator, detector=detector)
-        self.keyword_strategy = self.config.get("strategy", "utterance")
-        # TODO - plugin from config for kw extraction
-        self.kword_extractors: Dict[str, SearchtermExtractorCRF] = {}
+        super().__init__(config, enable_tx=enable_tx, priority=40, translator=translator, detector=detector)
+        self.kword_extractors: Dict[str, KeywordExtractor] = {}
+        self.summarizers: Dict[str, TldrSolver] = {}
 
-    @lru_cache(maxsize=128)
-    def extract_keyword(self, utterance: str, lang: str) -> Optional[str]:
-        """
-        Extract a keyword from an utterance for a given language.
+    def get_summarizer(self, lang: str) -> Optional[TldrSolver]:
+        if lang not in self.summarizers:
+            summarizer_plugin: str = self.config.get("summarizer") or "ovos-summarizer-bm25"
+            summarizer_class = load_tldr_solver_plugin(summarizer_plugin)
+            if not summarizer_class:
+                return None
+            try:
+                summarizer = summarizer_class(internal_lang=lang, enable_tx=self.enable_tx)
+            except:
+                summarizer = summarizer_class()  # some plugins dont accept all kwargs
+            if self.enable_tx:  # share objects to avoid re-init
+                summarizer._detector = self.detector
+                summarizer._translator = self.translator
+                summarizer.enable_tx = self.enable_tx
+            self.summarizers[lang] = summarizer
 
-        Args:
-            utterance (str): Input text.
-            lang (str): Language code.
+        return self.summarizers[lang]
 
-        Returns:
-            Optional[str]: Extracted keyword or None.
-        """
-        lang = lang.split("-")[0]
-        # langs supported by keyword extractor
-        if lang not in ["ca", "da", "de", "en", "eu", "fr", "gl", "it", "pt"]:
-            LOG.error(f"Keyword extractor does not support lang: '{lang}'")
-            return None
-
-        if self.keyword_strategy == "utterance":
-            kw = utterance
-        else:
-            if lang not in self.kword_extractors:
-                try:
-                    self.kword_extractors[lang] = SearchtermExtractorCRF.from_pretrained(lang)
-                except Exception as e:
-                    LOG.error(f"Failed to load keyword extractor for '{lang}'  ({e})")
-                    return utterance
-            kw = self.kword_extractors[lang].extract_keyword(utterance)
-
-        if kw:
-            LOG.debug(f"Wikipedia search term: {kw}")
-        else:
-            LOG.debug(f"Could not extract search keyword for '{lang}' from '{utterance}'")
-        return kw or utterance
+    def get_keyword_extractor(self, lang: str) -> Optional[KeywordExtractor]:
+        if lang not in self.summarizers:
+            kw_plugin: str = self.config.get("keyword_extractor") or "ovos-rake-keyword-extractor"
+            kword_extractor_class = load_keyword_extract_plugin(kw_plugin)
+            if not kword_extractor_class:
+                return None
+            kword_extractor = kword_extractor_class()
+            if self.enable_tx:  # share objects to avoid re-init
+                kword_extractor._detector = self.detector
+                kword_extractor._translator = self.translator
+                kword_extractor_class.enable_tx = self.enable_tx
+            self.kword_extractors[lang] = kword_extractor
+        return self.kword_extractors[lang]
 
     @classmethod
     @lru_cache(maxsize=128)
@@ -91,10 +88,8 @@ class WikipediaSolver(QuestionSolver):
         Returns:
             Tuple[Optional[str], Optional[str], Optional[str]]: Page title, summary, and image URL.
         """
-        url = (
-            f"https://{lang}.wikipedia.org/w/api.php?format=json&action=query&"
-            f"prop=extracts|pageimages&exintro&explaintext&redirects=1&pageids={pid}"
-        )
+        url = (f"https://{lang}.wikipedia.org/w/api.php?format=json&action=query&"
+               f"prop=extracts|pageimages&exintro&explaintext&redirects=1&pageids={pid}")
         try:
             disambiguation_indicators = ["may refer to:", "refers to:"]
             response = requests.get(url, timeout=5, headers={"User-Agent": cls.USER_AGENT}).json()
@@ -112,31 +107,6 @@ class WikipediaSolver(QuestionSolver):
             LOG.error(f"Error fetching page data for PID {pid}: {e}")
             return None, None, None
 
-    @lru_cache(maxsize=128)
-    def summarize(self, query: str, summary: str, lang: Optional[str] = None) -> str:
-        """
-        Summarize a text using a query for context.
-
-        Args:
-            query (str): User query.
-            summary (str): Wikipedia summary.
-
-        Returns:
-            str: Top-ranked summarized text.
-        """
-        try:
-            top_k = 3
-            lang = lang or self.default_lang  # ensure its not None to skip auto language detection
-            sentences = sentence_tokenize(summary)
-            ranked = BM25MultipleChoiceSolver(internal_lang=lang,
-                                              detector=self._detector,
-                                              translator=self._translator).rerank(query=query,
-                                                                                  options=sentences,
-                                                                                  lang=lang)[:top_k]
-            return " ".join([s[1] for s in ranked])
-        except Exception as e:
-            return summary.split("\n")[0]
-
     @staticmethod
     @lru_cache(maxsize=128)
     def score_page(query: str, title: str, summary: str, idx: int) -> float:
@@ -153,10 +123,8 @@ class WikipediaSolver(QuestionSolver):
             float: Relevance score.
         """
         page_mod = 1 - (idx * 0.05)  # Favor original order returned by Wikipedia
-        title_score = max(
-            fuzzy_match(query, title, MatchStrategy.DAMERAU_LEVENSHTEIN_SIMILARITY),
-            fuzzy_match(query, rm_parentheses(title), MatchStrategy.DAMERAU_LEVENSHTEIN_SIMILARITY)
-        )
+        title_score = max(fuzzy_match(query, title, MatchStrategy.DAMERAU_LEVENSHTEIN_SIMILARITY),
+            fuzzy_match(query, rm_parentheses(title), MatchStrategy.DAMERAU_LEVENSHTEIN_SIMILARITY))
         summary_score = fuzzy_match(summary, title, MatchStrategy.TOKEN_SET_RATIO)
         return title_score * summary_score * page_mod
 
@@ -165,21 +133,18 @@ class WikipediaSolver(QuestionSolver):
         """Fetch Wikipedia search results and detailed data concurrently."""
         LOG.debug(f"WikiSolver query: {query}")
         lang = (lang or self.default_lang).split("-")[0]
-        search_url = (
-            f"https://{lang}.wikipedia.org/w/api.php?action=query&list=search&"
-            f"srsearch={query}&format=json"
-        )
+        search_url = (f"https://{lang}.wikipedia.org/w/api.php?action=query&list=search&"
+                      f"srsearch={query}&format=json")
         try:
-            search_results = requests.get(search_url,
-                                          timeout=5,
-                                          headers={"User-Agent": self.USER_AGENT}
-                                          ).json().get("query", {}).get("search", [])
+            search_results = requests.get(search_url, timeout=5, headers={"User-Agent": self.USER_AGENT}).json().get(
+                "query", {}).get("search", [])
         except Exception as e:
             LOG.error(f"Error fetching search results: {e}")
             search_results = []
 
         if not search_results:
-            fallback_query = self.extract_keyword(query, lang)
+            kwx = self.get_keyword_extractor(lang)
+            fallback_query = max(kwx.extract(query, lang=lang))
             if fallback_query and fallback_query != query:
                 LOG.debug(f"WikiSolver Fallback, new query: {fallback_query}")
                 return self.get_data(fallback_query, lang=lang, units=units)
@@ -192,11 +157,8 @@ class WikipediaSolver(QuestionSolver):
         # Prepare for parallel fetch and maintain original order
         summaries = [None] * len(search_results)  # List to hold results in original order
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_idx = {
-                executor.submit(self.get_page_data, str(r["pageid"]), lang): idx
-                for idx, r in enumerate(search_results)
-                if "(disambiguation)" not in r["title"]
-            }
+            future_to_idx = {executor.submit(self.get_page_data, str(r["pageid"]), lang): idx for idx, r in
+                enumerate(search_results) if "(disambiguation)" not in r["title"]}
 
             for future in concurrent.futures.as_completed(future_to_idx):
                 idx = future_to_idx[future]  # Get original index from future
@@ -210,8 +172,13 @@ class WikipediaSolver(QuestionSolver):
 
         reranked = []
         shorts = []
+        summarizer = self.get_summarizer(lang)
         for idx, (title, summary, img) in enumerate(summaries):
-            short = self.summarize(query, summary, lang)
+            try:
+                short = summarizer.tldr(summary, lang=lang)
+            except Exception as e:
+                short = summary
+
             score = self.score_page(query, title, short, idx)
             reranked.append((idx, score))
             shorts.append(short)
@@ -219,32 +186,20 @@ class WikipediaSolver(QuestionSolver):
         reranked = sorted(reranked, key=lambda x: x[1], reverse=True)
         selected = reranked[0][0]
 
-        return {
-            "title": summaries[selected][0],
-            "short_answer": shorts[selected],
-            "summary": summaries[selected][1],
-            "img": summaries[selected][2],
-        }
+        return {"title": summaries[selected][0], "short_answer": shorts[selected], "summary": summaries[selected][1],
+            "img": summaries[selected][2], }
 
-    def get_spoken_answer(self, query: str,
-                          lang: Optional[str] = None,
-                          units: Optional[str] = None,
+    def get_spoken_answer(self, query: str, lang: Optional[str] = None, units: Optional[str] = None,
                           skip_disambiguation: bool = False):
-        data = self.get_data(query, lang=lang, units=units,
-                             skip_disambiguation=skip_disambiguation)
+        data = self.get_data(query, lang=lang, units=units, skip_disambiguation=skip_disambiguation)
         return data.get("short_answer", "")
 
-    def get_image(self, query: str,
-                  lang: Optional[str] = None,
-                  units: Optional[str] = None,
+    def get_image(self, query: str, lang: Optional[str] = None, units: Optional[str] = None,
                   skip_disambiguation: bool = True):
-        data = self.get_data(query, lang=lang, units=units,
-                             skip_disambiguation=skip_disambiguation)
+        data = self.get_data(query, lang=lang, units=units, skip_disambiguation=skip_disambiguation)
         return data.get("img", "")
 
-    def get_expanded_answer(self, query: str,
-                            lang: Optional[str] = None,
-                            units: Optional[str] = None,
+    def get_expanded_answer(self, query: str, lang: Optional[str] = None, units: Optional[str] = None,
                             skip_disambiguation: bool = False):
         """
         return a list of ordered steps to expand the answer, eg, "tell me more"
@@ -254,24 +209,15 @@ class WikipediaSolver(QuestionSolver):
             "img": "optional/path/or/url
         }
         """
-        data = self.get_data(query, lang=lang, units=units,
-                             skip_disambiguation=skip_disambiguation)
+        data = self.get_data(query, lang=lang, units=units, skip_disambiguation=skip_disambiguation)
         ans = flatten_list([sentence_tokenize(s) for s in data["summary"].split("\n")])
-        steps = [{
-            "title": data.get("title", query).title(),
-            "summary": s,
-            "img": data.get("img")
-        } for s in ans]
+        steps = [{"title": data.get("title", query).title(), "summary": s, "img": data.get("img")} for s in ans]
         return steps
 
 
-WIKIPEDIA_PERSONA = {
-    "name": "Wikipedia",
-    "solvers": [
-        "ovos-solver-plugin-wikipedia",
-        "ovos-solver-failure-plugin"
-    ]
-}
+WIKIPEDIA_PERSONA = {"name": "Wikipedia",
+                     "solvers": ["ovos-solver-plugin-wikipedia",
+                                 "ovos-solver-failure-plugin"]}
 
 if __name__ == "__main__":
     LOG.set_level("ERROR")
@@ -283,8 +229,8 @@ if __name__ == "__main__":
     # 'answer': 'The Musk family is a wealthy family of South African origin that is largely active in the United States and Canada.'})
 
     query = "who is Isaac Newton"
-    print(s.extract_keyword(query, "en-us"))
-    #assert s.extract_keyword(query, "en-us") == "Isaac Newton"
+    print(s.get_keyword_extractor("en").extract(query, "en"))
+    # assert s.extract_keyword(query, "en-us") == "Isaac Newton"
 
     print(s.get_spoken_answer("venus", "en"))
     print(s.get_spoken_answer("elon musk", "en"))

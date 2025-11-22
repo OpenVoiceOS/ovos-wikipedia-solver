@@ -78,6 +78,7 @@ setup(
     install_requires=get_requirements("requirements.txt"),
     keywords='ovos skill plugin',
     entry_points={
-        'neon.plugin.solver': SOLVER_ENTRY_POINT,
-        "opm.plugin.persona": PERSONA_ENTRY_POINT}
+        'opm.solver.question': SOLVER_ENTRY_POINT,
+        "opm.plugin.persona": PERSONA_ENTRY_POINT
+    }
 )
