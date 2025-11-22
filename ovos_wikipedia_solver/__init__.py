@@ -275,16 +275,16 @@ class WikipediaSolver(QuestionSolver):
     def get_expanded_answer(self, query: str, lang: Optional[str] = None, units: Optional[str] = None,
                             skip_disambiguation: bool = False):
         """
-                            Produce an ordered list of step dictionaries that expand the page summary into sentence-level items.
+        Produce an ordered list of step dictionaries that expand the page summary into sentence-level items.
 
-                            Each step corresponds to a sentence from the page summary. The step title defaults to the page title (or the original query capitalized) and the image is copied from the page data when available.
+        Each step corresponds to a sentence from the page summary. The step title defaults to the page title (or the original query capitalized) and the image is copied from the page data when available.
 
-                            Returns:
-                                List[dict]: A list of steps where each dict contains:
-                                    - title (str): Page title or capitalized query.
-                                    - summary (str): A single sentence to speak.
-                                    - img (str | None): Image URL or path, or None if unavailable.
-                            """
+        Returns:
+            List[dict]: A list of steps where each dict contains:
+                - title (str): Page title or capitalized query.
+                - summary (str): A single sentence to speak.
+                - img (str | None): Image URL or path, or None if unavailable.
+        """
         data = self.get_data(query, lang=lang, units=units, skip_disambiguation=skip_disambiguation)
         ans = flatten_list([sentence_tokenize(s) for s in data["summary"].split("\n")])
         steps = [{"title": data.get("title", query).title(), "summary": s, "img": data.get("img")} for s in ans]
