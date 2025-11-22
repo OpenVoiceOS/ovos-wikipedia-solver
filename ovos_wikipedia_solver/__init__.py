@@ -119,8 +119,10 @@ class WikipediaSolver(QuestionSolver):
                 - image_url: Derived image URL (thumbnail path normalized by removing "thumb" segments) or `None` if no image is available.
                 Returns (None, None, None) on disambiguation pages or on request/parse errors.
         """
-        url = (f"https://{lang}.wikipedia.org/w/api.php?format=json&action=query&"
-               f"prop=extracts|pageimages&exintro&explaintext&redirects=1&pageids={pid}")
+        url = (
+            f"https://{lang}.wikipedia.org/w/api.php?format=json&action=query&"
+            f"prop=extracts|pageimages&exintro&explaintext&redirects=1&pageids={pid}"
+        )
         try:
             disambiguation_indicators = ["may refer to:", "refers to:"]
             response = requests.get(url, timeout=5, headers={"User-Agent": cls.USER_AGENT}).json()
@@ -154,8 +156,10 @@ class WikipediaSolver(QuestionSolver):
             float: Relevance score where higher values indicate greater relevance.
         """
         page_mod = 1 - (idx * 0.05)  # Favor original order returned by Wikipedia
-        title_score = max(fuzzy_match(query, title, MatchStrategy.DAMERAU_LEVENSHTEIN_SIMILARITY),
-            fuzzy_match(query, rm_parentheses(title), MatchStrategy.DAMERAU_LEVENSHTEIN_SIMILARITY))
+        title_score = max(
+            fuzzy_match(query, title, MatchStrategy.DAMERAU_LEVENSHTEIN_SIMILARITY),
+            fuzzy_match(query, rm_parentheses(title), MatchStrategy.DAMERAU_LEVENSHTEIN_SIMILARITY)
+        )
         summary_score = fuzzy_match(summary, title, MatchStrategy.TOKEN_SET_RATIO)
         return title_score * summary_score * page_mod
 
@@ -182,21 +186,27 @@ class WikipediaSolver(QuestionSolver):
         """
         LOG.debug(f"WikiSolver query: {query}")
         lang = (lang or self.default_lang).split("-")[0]
-        search_url = (f"https://{lang}.wikipedia.org/w/api.php?action=query&list=search&"
-                      f"srsearch={query}&format=json")
+        search_url = (
+            f"https://{lang}.wikipedia.org/w/api.php?action=query&list=search&"
+            f"srsearch={query}&format=json"
+        )
         try:
-            search_results = requests.get(search_url, timeout=5, headers={"User-Agent": self.USER_AGENT}).json().get(
-                "query", {}).get("search", [])
+            search_results = requests.get(search_url,
+                                          timeout=5,
+                                          headers={"User-Agent": self.USER_AGENT}
+                                          ).json().get("query", {}).get("search", [])
         except Exception as e:
             LOG.error(f"Error fetching search results: {e}")
             search_results = []
 
         if not search_results:
             kwx = self.get_keyword_extractor(lang)
-            fallback_query = max(kwx.extract(query, lang=lang))
-            if fallback_query and fallback_query != query:
-                LOG.debug(f"WikiSolver Fallback, new query: {fallback_query}")
-                return self.get_data(fallback_query, lang=lang, units=units)
+            keywords = kwx.extract(query, lang=lang)
+            if keywords:
+                fallback_query = max(keywords)
+                if fallback_query and fallback_query != query:
+                    LOG.debug(f"WikiSolver Fallback, new query: {fallback_query}")
+                    return self.get_data(fallback_query, lang=lang, units=units)
             return {}
 
         top_k = 3 if not skip_disambiguation else 1
@@ -206,8 +216,11 @@ class WikipediaSolver(QuestionSolver):
         # Prepare for parallel fetch and maintain original order
         summaries = [None] * len(search_results)  # List to hold results in original order
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_idx = {executor.submit(self.get_page_data, str(r["pageid"]), lang): idx for idx, r in
-                enumerate(search_results) if "(disambiguation)" not in r["title"]}
+            future_to_idx = {
+                executor.submit(self.get_page_data, str(r["pageid"]), lang): idx
+                for idx, r in enumerate(search_results)
+                if "(disambiguation)" not in r["title"]
+            }
 
             for future in concurrent.futures.as_completed(future_to_idx):
                 idx = future_to_idx[future]  # Get original index from future
@@ -235,8 +248,12 @@ class WikipediaSolver(QuestionSolver):
         reranked = sorted(reranked, key=lambda x: x[1], reverse=True)
         selected = reranked[0][0]
 
-        return {"title": summaries[selected][0], "short_answer": shorts[selected], "summary": summaries[selected][1],
-            "img": summaries[selected][2], }
+        return {
+            "title": summaries[selected][0],
+            "short_answer": shorts[selected],
+            "summary": summaries[selected][1],
+            "img": summaries[selected][2],
+        }
 
     def get_spoken_answer(self, query: str, lang: Optional[str] = None, units: Optional[str] = None,
                           skip_disambiguation: bool = False):
@@ -272,7 +289,9 @@ class WikipediaSolver(QuestionSolver):
         data = self.get_data(query, lang=lang, units=units, skip_disambiguation=skip_disambiguation)
         return data.get("img", "")
 
-    def get_expanded_answer(self, query: str, lang: Optional[str] = None, units: Optional[str] = None,
+    def get_expanded_answer(self, query: str,
+                            lang: Optional[str] = None,
+                            units: Optional[str] = None,
                             skip_disambiguation: bool = False):
         """
         Produce an ordered list of step dictionaries that expand the page summary into sentence-level items.
@@ -287,13 +306,21 @@ class WikipediaSolver(QuestionSolver):
         """
         data = self.get_data(query, lang=lang, units=units, skip_disambiguation=skip_disambiguation)
         ans = flatten_list([sentence_tokenize(s) for s in data["summary"].split("\n")])
-        steps = [{"title": data.get("title", query).title(), "summary": s, "img": data.get("img")} for s in ans]
+        steps = [{
+            "title": data.get("title", query).title(),
+            "summary": s,
+            "img": data.get("img")
+        } for s in ans]
         return steps
 
 
-WIKIPEDIA_PERSONA = {"name": "Wikipedia",
-                     "solvers": ["ovos-solver-plugin-wikipedia",
-                                 "ovos-solver-failure-plugin"]}
+WIKIPEDIA_PERSONA = {
+    "name": "Wikipedia",
+    "solvers": [
+        "ovos-solver-plugin-wikipedia",
+        "ovos-solver-failure-plugin"
+    ]
+}
 
 if __name__ == "__main__":
     LOG.set_level("ERROR")
