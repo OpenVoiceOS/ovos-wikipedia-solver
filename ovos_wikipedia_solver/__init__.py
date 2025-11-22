@@ -93,7 +93,7 @@ class WikipediaSolver(QuestionSolver):
         )
         try:
             disambiguation_indicators = ["may refer to:", "refers to:"]
-            response = requests.get(url, timeout=5, headers={"User-Agent": "ovos-wikipedia-solver"}).json()
+            response = requests.get(url, timeout=5, headers={"User-Agent": "ovos-wikipedia-solver/1.0 (https://github.com/OpenVoiceOS/ovos-wikipedia-solver)"}).json()
             page = response["query"]["pages"][pid]
             summary = rm_parentheses(page.get("extract", ""))
             if any(i in summary for i in disambiguation_indicators):
