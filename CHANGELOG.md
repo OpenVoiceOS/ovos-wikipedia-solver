@@ -1,12 +1,12 @@
 # Changelog
 
-## [0.1.2a1](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/tree/0.1.2a1) (2025-11-05)
+## [0.1.3a1](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/tree/0.1.3a1) (2025-11-22)
 
-[Full Changelog](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/compare/0.1.1...0.1.2a1)
+[Full Changelog](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/compare/0.1.2...0.1.3a1)
 
 **Merged pull requests:**
 
-- Update ovos-plugin-manager version range [\#7](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/pull/7) ([JarbasAl](https://github.com/JarbasAl))
+- fix: wikipedia headers, respect bot policy [\#9](https://github.com/OpenVoiceOS/ovos-wikipedia-solver/pull/9) ([JarbasAl](https://github.com/JarbasAl))
 
 
 
