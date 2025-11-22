@@ -24,12 +24,16 @@ from quebra_frases import sentence_tokenize
 from ovos_bm25_solver import BM25MultipleChoiceSolver
 from ovos_plugin_manager.templates.language import LanguageTranslator, LanguageDetector
 from ovos_plugin_manager.templates.solvers import QuestionSolver
+from ovos_wikipedia_solver.version import VERSION_BUILD, VERSION_MAJOR, VERSION_MINOR
+
 
 
 class WikipediaSolver(QuestionSolver):
     """
     A solver for answering questions using Wikipedia search and summaries.
     """
+    USER_AGENT = f"ovos-wikipedia-solver/{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_BUILD} (https://github.com/OpenVoiceOS/ovos-wikipedia-solver)"
+
     def __init__(self, config: Optional[Dict[str, Any]] = None, enable_tx=False,
                  translator: Optional[LanguageTranslator] = None,
                  detector: Optional[LanguageDetector] = None):
@@ -74,9 +78,9 @@ class WikipediaSolver(QuestionSolver):
             LOG.debug(f"Could not extract search keyword for '{lang}' from '{utterance}'")
         return kw or utterance
 
-    @staticmethod
+    @classmethod
     @lru_cache(maxsize=128)
-    def get_page_data(pid: str, lang: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    def get_page_data(cls, pid: str, lang: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
         Fetch detailed data for a specific Wikipedia page.
 
@@ -93,7 +97,7 @@ class WikipediaSolver(QuestionSolver):
         )
         try:
             disambiguation_indicators = ["may refer to:", "refers to:"]
-            response = requests.get(url, timeout=5, headers={"User-Agent": "ovos-wikipedia-solver/1.0 (https://github.com/OpenVoiceOS/ovos-wikipedia-solver)"}).json()
+            response = requests.get(url, timeout=5, headers={"User-Agent": cls.USER_AGENT}).json()
             page = response["query"]["pages"][pid]
             summary = rm_parentheses(page.get("extract", ""))
             if any(i in summary for i in disambiguation_indicators):
@@ -166,7 +170,10 @@ class WikipediaSolver(QuestionSolver):
             f"srsearch={query}&format=json"
         )
         try:
-            search_results = requests.get(search_url, timeout=5, headers={"User-Agent": "ovos-wikipedia-solver"}).json().get("query", {}).get("search", [])
+            search_results = requests.get(search_url,
+                                          timeout=5,
+                                          headers={"User-Agent": self.USER_AGENT}
+                                          ).json().get("query", {}).get("search", [])
         except Exception as e:
             LOG.error(f"Error fetching search results: {e}")
             search_results = []
