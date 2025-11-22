@@ -14,18 +14,19 @@ from functools import lru_cache
 from typing import Optional, Tuple, Dict, Any
 
 import requests
-from crf_query_xtract import SearchtermExtractorCRF
+from ovos_bm25_solver import BM25MultipleChoiceSolver
+from ovos_plugin_manager.keywords import load_keyword_extract_plugin
+from ovos_plugin_manager.solvers import load_tldr_solver_plugin
+from ovos_plugin_manager.templates.keywords import KeywordExtractor
+from ovos_plugin_manager.templates.language import LanguageTranslator, LanguageDetector
+from ovos_plugin_manager.templates.solvers import QuestionSolver, TldrSolver
 from ovos_utils import flatten_list
 from ovos_utils.log import LOG
 from ovos_utils.parse import fuzzy_match, MatchStrategy
 from ovos_utils.text_utils import rm_parentheses
 from quebra_frases import sentence_tokenize
 
-from ovos_bm25_solver import BM25MultipleChoiceSolver
-from ovos_plugin_manager.templates.language import LanguageTranslator, LanguageDetector
-from ovos_plugin_manager.templates.solvers import QuestionSolver
 from ovos_wikipedia_solver.version import VERSION_BUILD, VERSION_MAJOR, VERSION_MINOR
-
 
 
 class WikipediaSolver(QuestionSolver):
@@ -34,62 +35,89 @@ class WikipediaSolver(QuestionSolver):
     """
     USER_AGENT = f"ovos-wikipedia-solver/{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_BUILD} (https://github.com/OpenVoiceOS/ovos-wikipedia-solver)"
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, enable_tx=False,
+    def __init__(self, config: Optional[Dict[str, Any]] = None,
+                 enable_tx=False,
                  translator: Optional[LanguageTranslator] = None,
                  detector: Optional[LanguageDetector] = None):
-        super().__init__(config, enable_tx=enable_tx, priority=40,
-                         translator=translator, detector=detector)
-        self.keyword_strategy = self.config.get("strategy", "utterance")
-        # TODO - plugin from config for kw extraction
-        self.kword_extractors: Dict[str, SearchtermExtractorCRF] = {}
-
-    @lru_cache(maxsize=128)
-    def extract_keyword(self, utterance: str, lang: str) -> Optional[str]:
         """
-        Extract a keyword from an utterance for a given language.
+        Initialize a WikipediaSolver instance, configure base QuestionSolver, and prepare plugin caches.
 
-        Args:
-            utterance (str): Input text.
-            lang (str): Language code.
+        Parameters:
+            config (dict | None): Optional configuration for the solver.
+            enable_tx (bool): If True, enables translation support and causes translator/detector to be propagated to plugins.
+            translator (LanguageTranslator | None): Optional translator to be forwarded to language-aware plugins when translation is enabled.
+            detector (LanguageDetector | None): Optional language detector to be forwarded to language-aware plugins when translation is enabled.
+
+        Detailed behavior:
+            - Calls the superclass initializer with the provided parameters and a fixed priority of 40.
+            - Creates empty caches for per-language keyword extractors (`kword_extractors`) and summarizers (`summarizers`).
+        """
+        super().__init__(config, enable_tx=enable_tx, priority=40, translator=translator, detector=detector)
+        self.kword_extractors: Dict[str, KeywordExtractor] = {}
+        self.summarizers: Dict[str, TldrSolver] = {}
+
+    def get_summarizer(self, lang: str) -> Optional[TldrSolver]:
+        """
+        Lazily load, configure, cache, and return a language-specific TLDR summarizer plugin.
+
+        If a summarizer plugin is configured or the default plugin is available, instantiate it for the given language, attach shared translator/detector objects when translation is enabled, cache the instance, and return it.
 
         Returns:
-            Optional[str]: Extracted keyword or None.
+            A TldrSolver instance configured for `lang`, or `None` if the plugin cannot be found or instantiated.
         """
-        lang = lang.split("-")[0]
-        # langs supported by keyword extractor
-        if lang not in ["ca", "da", "de", "en", "eu", "fr", "gl", "it", "pt"]:
-            LOG.error(f"Keyword extractor does not support lang: '{lang}'")
-            return None
+        if lang not in self.summarizers:
+            summarizer_plugin: str = self.config.get("summarizer") or "ovos-summarizer-bm25"
+            summarizer_class = load_tldr_solver_plugin(summarizer_plugin)
+            if not summarizer_class:
+                return None
+            try:
+                summarizer = summarizer_class(internal_lang=lang, enable_tx=self.enable_tx)
+            except:
+                summarizer = summarizer_class()  # some plugins dont accept all kwargs
+            if self.enable_tx:  # share objects to avoid re-init
+                summarizer._detector = self.detector
+                summarizer._translator = self.translator
+                summarizer.enable_tx = self.enable_tx
+            self.summarizers[lang] = summarizer
 
-        if self.keyword_strategy == "utterance":
-            kw = utterance
-        else:
-            if lang not in self.kword_extractors:
-                try:
-                    self.kword_extractors[lang] = SearchtermExtractorCRF.from_pretrained(lang)
-                except Exception as e:
-                    LOG.error(f"Failed to load keyword extractor for '{lang}'  ({e})")
-                    return utterance
-            kw = self.kword_extractors[lang].extract_keyword(utterance)
+        return self.summarizers[lang]
 
-        if kw:
-            LOG.debug(f"Wikipedia search term: {kw}")
-        else:
-            LOG.debug(f"Could not extract search keyword for '{lang}' from '{utterance}'")
-        return kw or utterance
+    def get_keyword_extractor(self, lang: str) -> Optional[KeywordExtractor]:
+        """
+        Get a keyword extractor instance for the given language, creating and caching a plugin instance when needed.
+
+        Returns:
+            KeywordExtractor | None: A `KeywordExtractor` configured for `lang`, or `None` if the configured plugin cannot be loaded.
+        """
+        if lang not in self.summarizers:
+            kw_plugin: str = self.config.get("keyword_extractor") or "ovos-rake-keyword-extractor"
+            kword_extractor_class = load_keyword_extract_plugin(kw_plugin)
+            if not kword_extractor_class:
+                return None
+            kword_extractor = kword_extractor_class()
+            if self.enable_tx:  # share objects to avoid re-init
+                kword_extractor._detector = self.detector
+                kword_extractor._translator = self.translator
+                kword_extractor_class.enable_tx = self.enable_tx
+            self.kword_extractors[lang] = kword_extractor
+        return self.kword_extractors[lang]
 
     @classmethod
     @lru_cache(maxsize=128)
     def get_page_data(cls, pid: str, lang: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
-        Fetch detailed data for a specific Wikipedia page.
+        Fetch the title, plain-text intro summary, and an image URL for a Wikipedia page.
 
-        Args:
-            pid (str): Page ID.
-            lang (str): Language code.
+        Parameters:
+            pid (str): Wikipedia pageid.
+            lang (str): Language code (e.g., "en", "pt"); used as the wiki subdomain.
 
         Returns:
-            Tuple[Optional[str], Optional[str], Optional[str]]: Page title, summary, and image URL.
+            Tuple[Optional[str], Optional[str], Optional[str]]: (title, summary, image_url).
+                - title: Page title or `None` if not available.
+                - summary: Plain-text intro with parenthetical content removed, or `None` when the page is a disambiguation list or on error.
+                - image_url: Derived image URL (thumbnail path normalized by removing "thumb" segments) or `None` if no image is available.
+                Returns (None, None, None) on disambiguation pages or on request/parse errors.
         """
         url = (
             f"https://{lang}.wikipedia.org/w/api.php?format=json&action=query&"
@@ -112,45 +140,20 @@ class WikipediaSolver(QuestionSolver):
             LOG.error(f"Error fetching page data for PID {pid}: {e}")
             return None, None, None
 
-    @lru_cache(maxsize=128)
-    def summarize(self, query: str, summary: str, lang: Optional[str] = None) -> str:
-        """
-        Summarize a text using a query for context.
-
-        Args:
-            query (str): User query.
-            summary (str): Wikipedia summary.
-
-        Returns:
-            str: Top-ranked summarized text.
-        """
-        try:
-            top_k = 3
-            lang = lang or self.default_lang  # ensure its not None to skip auto language detection
-            sentences = sentence_tokenize(summary)
-            ranked = BM25MultipleChoiceSolver(internal_lang=lang,
-                                              detector=self._detector,
-                                              translator=self._translator).rerank(query=query,
-                                                                                  options=sentences,
-                                                                                  lang=lang)[:top_k]
-            return " ".join([s[1] for s in ranked])
-        except Exception as e:
-            return summary.split("\n")[0]
-
     @staticmethod
     @lru_cache(maxsize=128)
     def score_page(query: str, title: str, summary: str, idx: int) -> float:
         """
-        Score a Wikipedia page based on its relevance to a query.
+        Compute a relevance score for a Wikipedia page given a search query.
 
-        Args:
-            query (str): User query.
-            title (str): Page title.
-            summary (str): Page summary.
-            idx (int): Index in the original search result order.
+        Parameters:
+            query (str): The user's search query.
+            title (str): The page title.
+            summary (str): The page summary text.
+            idx (int): The page's index in the original search results; lower indices are weighted more favorably.
 
         Returns:
-            float: Relevance score.
+            float: Relevance score where higher values indicate greater relevance.
         """
         page_mod = 1 - (idx * 0.05)  # Favor original order returned by Wikipedia
         title_score = max(
@@ -162,7 +165,25 @@ class WikipediaSolver(QuestionSolver):
 
     def get_data(self, query: str, lang: Optional[str] = None, units: Optional[str] = None,
                  skip_disambiguation: bool = False):
-        """Fetch Wikipedia search results and detailed data concurrently."""
+        """
+        Searches Wikipedia for a query, fetches page extracts in the requested language, generates a short answer, and returns the best-matching result.
+
+        Performs a site search using the language's Wikipedia, falls back to a keyword-extracted query if no results are found, concurrently fetches page data (skipping disambiguation pages), creates a short summary using the configured summarizer plugin, scores and re-ranks candidates, and returns the top entry.
+
+        Parameters:
+            query (str): User query to search on Wikipedia.
+            lang (Optional[str]): Language code or locale to use (e.g., "en" or "pt-BR"); defaults to the solver's default language if omitted.
+            units (Optional[str]): Units preference (accepted but not used by this method).
+            skip_disambiguation (bool): If True, limit search to a single top result to avoid multiple disambiguation candidates.
+
+        Returns:
+            dict: A dictionary with keys:
+                - "title": selected page title (str)
+                - "short_answer": concise summary of the page (str)
+                - "summary": full page extract (str)
+                - "img": image URL if available (str or None)
+            Returns an empty dict if no suitable page data could be retrieved.
+        """
         LOG.debug(f"WikiSolver query: {query}")
         lang = (lang or self.default_lang).split("-")[0]
         search_url = (
@@ -179,10 +200,13 @@ class WikipediaSolver(QuestionSolver):
             search_results = []
 
         if not search_results:
-            fallback_query = self.extract_keyword(query, lang)
-            if fallback_query and fallback_query != query:
-                LOG.debug(f"WikiSolver Fallback, new query: {fallback_query}")
-                return self.get_data(fallback_query, lang=lang, units=units)
+            kwx = self.get_keyword_extractor(lang)
+            keywords = kwx.extract(query, lang=lang)
+            if keywords:
+                fallback_query = max(keywords)
+                if fallback_query and fallback_query != query:
+                    LOG.debug(f"WikiSolver Fallback, new query: {fallback_query}")
+                    return self.get_data(fallback_query, lang=lang, units=units)
             return {}
 
         top_k = 3 if not skip_disambiguation else 1
@@ -210,8 +234,13 @@ class WikipediaSolver(QuestionSolver):
 
         reranked = []
         shorts = []
+        summarizer = self.get_summarizer(lang)
         for idx, (title, summary, img) in enumerate(summaries):
-            short = self.summarize(query, summary, lang)
+            try:
+                short = summarizer.tldr(summary, lang=lang)
+            except Exception as e:
+                short = summary
+
             score = self.score_page(query, title, short, idx)
             reranked.append((idx, score))
             shorts.append(short)
@@ -226,20 +255,38 @@ class WikipediaSolver(QuestionSolver):
             "img": summaries[selected][2],
         }
 
-    def get_spoken_answer(self, query: str,
-                          lang: Optional[str] = None,
-                          units: Optional[str] = None,
+    def get_spoken_answer(self, query: str, lang: Optional[str] = None, units: Optional[str] = None,
                           skip_disambiguation: bool = False):
-        data = self.get_data(query, lang=lang, units=units,
-                             skip_disambiguation=skip_disambiguation)
+        """
+        Return a concise spoken answer for the given query using Wikipedia search and summarization.
+
+        Parameters:
+          query (str): The user's question or search query.
+          lang (Optional[str]): Language tag (e.g., "en") to use for search and summarization; when None, the solver's default language is used.
+          units (Optional[str]): Unit system hint (unused by Wikipedia lookup; provided for API compatibility).
+          skip_disambiguation (bool): If True, prefer a single top result and avoid expanding disambiguation results.
+
+        Returns:
+          short_answer (str): A brief spoken answer extracted or generated from the top Wikipedia page, or an empty string if no answer is found.
+        """
+        data = self.get_data(query, lang=lang, units=units, skip_disambiguation=skip_disambiguation)
         return data.get("short_answer", "")
 
-    def get_image(self, query: str,
-                  lang: Optional[str] = None,
-                  units: Optional[str] = None,
+    def get_image(self, query: str, lang: Optional[str] = None, units: Optional[str] = None,
                   skip_disambiguation: bool = True):
-        data = self.get_data(query, lang=lang, units=units,
-                             skip_disambiguation=skip_disambiguation)
+        """
+        Retrieve the image URL for the best-matching Wikipedia page for a query.
+
+        Parameters:
+          query (str): Search query.
+          lang (Optional[str]): Language code to use for the search; if omitted the solver's default language is used.
+          units (Optional[str]): Units preference passed through to underlying helpers (unused by this method).
+          skip_disambiguation (bool): If True, prefer a single top result to avoid disambiguation pages.
+
+        Returns:
+          img (str): Image URL for the selected page, or an empty string if no image is available.
+        """
+        data = self.get_data(query, lang=lang, units=units, skip_disambiguation=skip_disambiguation)
         return data.get("img", "")
 
     def get_expanded_answer(self, query: str,
@@ -247,15 +294,17 @@ class WikipediaSolver(QuestionSolver):
                             units: Optional[str] = None,
                             skip_disambiguation: bool = False):
         """
-        return a list of ordered steps to expand the answer, eg, "tell me more"
-        {
-            "title": "optional",
-            "summary": "speak this",
-            "img": "optional/path/or/url
-        }
+        Produce an ordered list of step dictionaries that expand the page summary into sentence-level items.
+
+        Each step corresponds to a sentence from the page summary. The step title defaults to the page title (or the original query capitalized) and the image is copied from the page data when available.
+
+        Returns:
+            List[dict]: A list of steps where each dict contains:
+                - title (str): Page title or capitalized query.
+                - summary (str): A single sentence to speak.
+                - img (str | None): Image URL or path, or None if unavailable.
         """
-        data = self.get_data(query, lang=lang, units=units,
-                             skip_disambiguation=skip_disambiguation)
+        data = self.get_data(query, lang=lang, units=units, skip_disambiguation=skip_disambiguation)
         ans = flatten_list([sentence_tokenize(s) for s in data["summary"].split("\n")])
         steps = [{
             "title": data.get("title", query).title(),
@@ -283,8 +332,8 @@ if __name__ == "__main__":
     # 'answer': 'The Musk family is a wealthy family of South African origin that is largely active in the United States and Canada.'})
 
     query = "who is Isaac Newton"
-    print(s.extract_keyword(query, "en-us"))
-    #assert s.extract_keyword(query, "en-us") == "Isaac Newton"
+    print(s.get_keyword_extractor("en").extract(query, "en"))
+    # assert s.extract_keyword(query, "en-us") == "Isaac Newton"
 
     print(s.get_spoken_answer("venus", "en"))
     print(s.get_spoken_answer("elon musk", "en"))
