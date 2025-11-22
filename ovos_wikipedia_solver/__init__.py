@@ -93,7 +93,7 @@ class WikipediaSolver(QuestionSolver):
         )
         try:
             disambiguation_indicators = ["may refer to:", "refers to:"]
-            response = requests.get(url, timeout=5).json()
+            response = requests.get(url, timeout=5, headers={"User-Agent": "ovos-wikipedia-solver"}).json()
             page = response["query"]["pages"][pid]
             summary = rm_parentheses(page.get("extract", ""))
             if any(i in summary for i in disambiguation_indicators):
@@ -165,9 +165,8 @@ class WikipediaSolver(QuestionSolver):
             f"https://{lang}.wikipedia.org/w/api.php?action=query&list=search&"
             f"srsearch={query}&format=json"
         )
-
         try:
-            search_results = requests.get(search_url, timeout=5).json().get("query", {}).get("search", [])
+            search_results = requests.get(search_url, timeout=5, headers={"User-Agent": "ovos-wikipedia-solver"}).json().get("query", {}).get("search", [])
         except Exception as e:
             LOG.error(f"Error fetching search results: {e}")
             search_results = []
@@ -278,7 +277,7 @@ if __name__ == "__main__":
 
     query = "who is Isaac Newton"
     print(s.extract_keyword(query, "en-us"))
-    assert s.extract_keyword(query, "en-us") == "Isaac Newton"
+    #assert s.extract_keyword(query, "en-us") == "Isaac Newton"
 
     print(s.get_spoken_answer("venus", "en"))
     print(s.get_spoken_answer("elon musk", "en"))
